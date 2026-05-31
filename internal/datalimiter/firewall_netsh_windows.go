@@ -1,0 +1,114 @@
+//go:build windows
+
+package datalimiter
+
+import (
+	"errors"
+	"fmt"
+	"os/exec"
+	"regexp"
+	"strings"
+)
+
+type NetshFirewall struct{}
+
+func (OSDeps) Firewall() Firewall {
+	return NetshFirewall{}
+}
+
+func (NetshFirewall) ActiveProfiles() ([]string, error) {
+	out, err := runNetsh("advfirewall", "show", "currentprofile")
+	if err != nil {
+		return nil, err
+	}
+	lower := strings.ToLower(out)
+	profiles := []string{}
+	for _, profile := range []string{"domainprofile", "privateprofile", "publicprofile"} {
+		shortName := strings.TrimSuffix(profile, "profile")
+		if strings.Contains(lower, shortName+" profile") {
+			profiles = append(profiles, profile)
+		}
+	}
+	if len(profiles) == 0 {
+		return []string{"domainprofile", "privateprofile", "publicprofile"}, nil
+	}
+	return profiles, nil
+}
+
+func (NetshFirewall) ProfilePolicy(profile string) (string, error) {
+	out, err := runNetsh("advfirewall", "show", profile)
+	if err != nil {
+		return "", err
+	}
+	re := regexp.MustCompile(`(?mi)^\s*Firewall Policy\s+(.+?)\s*$`)
+	match := re.FindStringSubmatch(out)
+	if len(match) != 2 {
+		return "", errors.New("firewall policy line not found")
+	}
+	return strings.ReplaceAll(strings.ToLower(match[1]), " ", ""), nil
+}
+
+func (NetshFirewall) SetProfilePolicy(profile, policy string) error {
+	_, err := runNetsh("advfirewall", "set", profile, "firewallpolicy", policy)
+	return err
+}
+
+func (NetshFirewall) DeleteDataLimiterRules() error {
+	_, err := runPowerShell(`Get-NetFirewallRule -DisplayName 'DataLimiter -*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule`)
+	return err
+}
+
+func (NetshFirewall) AddRule(rule FirewallRule) error {
+	psArgs := []string{
+		"New-NetFirewallRule",
+		"-DisplayName", quotePS(rule.Name),
+		"-Direction", "Outbound",
+		"-Action", "Allow",
+		"-Enabled", "True",
+		"-Profile", "Any",
+	}
+	if rule.Program != "" {
+		psArgs = append(psArgs, "-Program", quotePS(rule.Program))
+	}
+	if rule.Protocol != "" {
+		psArgs = append(psArgs, "-Protocol", rule.Protocol)
+	}
+	if rule.LocalPort != "" {
+		psArgs = append(psArgs, "-LocalPort", rule.LocalPort)
+	}
+	if rule.RemotePort != "" {
+		psArgs = append(psArgs, "-RemotePort", rule.RemotePort)
+	}
+	_, err := runPowerShell(strings.Join(psArgs, " "))
+	return err
+}
+
+func (NetshFirewall) DataLimiterRulesPresent() (bool, error) {
+	out, err := runPowerShell(`if (Get-NetFirewallRule -DisplayName 'DataLimiter -*' -ErrorAction SilentlyContinue) { 'present' }`)
+	if err != nil {
+		return false, err
+	}
+	return strings.Contains(out, "present"), nil
+}
+
+func runNetsh(args ...string) (string, error) {
+	cmd := exec.Command("netsh", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("netsh %s failed: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+func runPowerShell(command string) (string, error) {
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("PowerShell firewall command failed: %s", strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+func quotePS(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
