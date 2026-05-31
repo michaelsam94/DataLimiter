@@ -2,6 +2,7 @@ package datalimiter
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -160,6 +161,79 @@ func TestAppRemoveUpdatesStateAndRebuildsRules(t *testing.T) {
 	}
 }
 
+func TestStrictEnableDisablesExistingOutboundAllowRules(t *testing.T) {
+	store := &memoryStore{
+		state: State{
+			Active:        true,
+			SavedPolicies: map[string]string{"publicprofile": "blockinbound,allowoutbound"},
+			ChromePath:    `C:\Chrome\chrome.exe`,
+		},
+		exists: true,
+	}
+	fw := &fakeFirewall{
+		outboundAllowRules: []FirewallRuleIdentity{
+			{Name: "rule-id", DisplayName: "Existing App"},
+		},
+	}
+	app := NewApp(fakeDeps{admin: true, fw: fw, store: store})
+	code := app.Run([]string{"strict", "enable"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if !store.state.StrictMode || len(store.state.DisabledRules) != 1 {
+		t.Fatalf("state = %#v", store.state)
+	}
+	if !contains(fw.calls, "disable-rules:1") {
+		t.Fatalf("calls = %v, want disable-rules", fw.calls)
+	}
+}
+
+func TestStrictDisableRestoresRules(t *testing.T) {
+	store := &memoryStore{
+		state: State{
+			Active:        true,
+			StrictMode:    true,
+			SavedPolicies: map[string]string{"publicprofile": "blockinbound,allowoutbound"},
+			ChromePath:    `C:\Chrome\chrome.exe`,
+			DisabledRules: []FirewallRuleIdentity{{Name: "rule-id", DisplayName: "Existing App"}},
+		},
+		exists: true,
+	}
+	fw := &fakeFirewall{}
+	app := NewApp(fakeDeps{admin: true, fw: fw, store: store})
+	code := app.Run([]string{"strict", "disable"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if store.state.StrictMode || len(store.state.DisabledRules) != 0 {
+		t.Fatalf("state = %#v", store.state)
+	}
+	if !contains(fw.calls, "enable-rules:1") {
+		t.Fatalf("calls = %v, want enable-rules", fw.calls)
+	}
+}
+
+func TestDisableRestoresStrictRules(t *testing.T) {
+	store := &memoryStore{
+		state: State{
+			Active:        true,
+			StrictMode:    true,
+			SavedPolicies: map[string]string{"publicprofile": "blockinbound,allowoutbound"},
+			DisabledRules: []FirewallRuleIdentity{{Name: "rule-id", DisplayName: "Existing App"}},
+		},
+		exists: true,
+	}
+	fw := &fakeFirewall{}
+	app := NewApp(fakeDeps{admin: true, fw: fw, store: store})
+	code := app.Run([]string{"disable"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if !contains(fw.calls, "enable-rules:1") {
+		t.Fatalf("calls = %v, want enable-rules", fw.calls)
+	}
+}
+
 func TestDisableDeletesRulesEvenWhenStateMissing(t *testing.T) {
 	store := &memoryStore{}
 	fw := &fakeFirewall{}
@@ -210,11 +284,12 @@ func (d fakeDeps) StateStore() StateStore {
 }
 
 type fakeFirewall struct {
-	activeProfiles []string
-	policies       map[string]string
-	rulesPresent   bool
-	calls          []string
-	added          []FirewallRule
+	activeProfiles     []string
+	policies           map[string]string
+	rulesPresent       bool
+	outboundAllowRules []FirewallRuleIdentity
+	calls              []string
+	added              []FirewallRule
 }
 
 func (f *fakeFirewall) ActiveProfiles() ([]string, error) {
@@ -246,6 +321,18 @@ func (f *fakeFirewall) AddRule(rule FirewallRule) error {
 }
 func (f *fakeFirewall) DataLimiterRulesPresent() (bool, error) {
 	return f.rulesPresent, nil
+}
+func (f *fakeFirewall) EnabledOutboundAllowRules() ([]FirewallRuleIdentity, error) {
+	f.calls = append(f.calls, "enabled-outbound-allow-rules")
+	return f.outboundAllowRules, nil
+}
+func (f *fakeFirewall) DisableRules(rules []FirewallRuleIdentity) error {
+	f.calls = append(f.calls, fmt.Sprintf("disable-rules:%d", len(rules)))
+	return nil
+}
+func (f *fakeFirewall) EnableRules(rules []FirewallRuleIdentity) error {
+	f.calls = append(f.calls, fmt.Sprintf("enable-rules:%d", len(rules)))
+	return nil
 }
 
 type memoryStore struct {

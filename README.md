@@ -26,6 +26,8 @@ datalimiter status
 datalimiter repair
 datalimiter app add <name-or-path>
 datalimiter app remove <name-or-path>
+datalimiter strict enable
+datalimiter strict disable
 ```
 
 `enable`, `disable`, and `repair` require Administrator privileges.
@@ -49,6 +51,37 @@ datalimiter app remove slack
 
 `status` shows Chrome and any extra apps currently allowed to access the
 internet.
+
+## Strict Mode
+
+Normal `enable` changes the Windows Firewall outbound default policy to block
+and adds DataLimiter allow rules, but existing outbound allow rules from other
+apps can still permit traffic.
+
+Strict mode is an explicit stronger mode for hotspot sessions where you want to
+reduce those exceptions:
+
+```powershell
+datalimiter strict enable
+```
+
+Strict mode snapshots currently enabled outbound allow rules that were not
+created by DataLimiter, disables those rules, and then reapplies the DataLimiter
+allow rules for Chrome, DNS, DHCP, and any apps added with `datalimiter app add`.
+
+Turn strict mode off without ending the DataLimiter session:
+
+```powershell
+datalimiter strict disable
+```
+
+`datalimiter disable` also restores the firewall rules disabled by strict mode
+and restores the previous outbound firewall policy.
+
+Strict mode can temporarily affect background apps, updaters, sync tools, game
+launchers, VPN clients, development tools, and other software. Keep an
+Administrator terminal available so you can run `datalimiter disable` if you
+need to recover normal connectivity.
 
 ## Typical Hotspot Workflow
 
@@ -82,6 +115,12 @@ Remove it later:
 
 ```powershell
 datalimiter app remove teams
+```
+
+For stricter hotspot data saving:
+
+```powershell
+datalimiter strict enable
 ```
 
 ## Build

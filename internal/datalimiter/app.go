@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 type App struct {
 	deps Deps
@@ -59,6 +59,8 @@ func (a App) Run(args []string, stdout, stderr io.Writer) int {
 		err = a.repair(stdout)
 	case "app":
 		err = a.appCommand(args[1:], stdout, stderr)
+	case "strict":
+		err = a.strictCommand(args[1:], stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -78,6 +80,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: datalimiter <enable|disable|status|repair>")
 	fmt.Fprintln(w, "       datalimiter app add <name-or-path>")
 	fmt.Fprintln(w, "       datalimiter app remove <name-or-path>")
+	fmt.Fprintln(w, "       datalimiter strict <enable|disable>")
 }
 
 func (a App) enable(stdout io.Writer) error {
@@ -142,6 +145,11 @@ func (a App) disable(stdout io.Writer) error {
 	}
 
 	if stateErr == nil {
+		if state.StrictMode {
+			if err := fw.EnableRules(state.DisabledRules); err != nil {
+				return fmt.Errorf("restore firewall rules disabled by strict mode: %w", err)
+			}
+		}
 		for profile, policy := range state.SavedPolicies {
 			if err := fw.SetProfilePolicy(profile, policy); err != nil {
 				return fmt.Errorf("restore %s profile firewall policy: %w", profile, err)
@@ -173,10 +181,12 @@ func (a App) status(stdout io.Writer) error {
 	switch {
 	case stateErr == nil && state.Active && rules:
 		fmt.Fprintln(stdout, "Status: active")
+		printStrictMode(stdout, state)
 		printAllowedApps(stdout, state)
 	case stateErr == nil && state.Active && !rules:
 		fmt.Fprintln(stdout, "Status: inconsistent")
 		fmt.Fprintln(stdout, "State says DataLimiter is active, but expected firewall rules are missing. Run: datalimiter repair")
+		printStrictMode(stdout, state)
 		printAllowedApps(stdout, state)
 	case errors.Is(stateErr, ErrStateNotFound) && rules:
 		fmt.Fprintln(stdout, "Status: inconsistent")
@@ -227,6 +237,92 @@ func (a App) appCommand(args []string, stdout, stderr io.Writer) error {
 		printUsage(stderr)
 		return errUsage
 	}
+}
+
+func (a App) strictCommand(args []string, stdout, stderr io.Writer) error {
+	if len(args) != 1 {
+		printUsage(stderr)
+		return errUsage
+	}
+
+	switch args[0] {
+	case "enable":
+		return a.enableStrict(stdout)
+	case "disable":
+		return a.disableStrict(stdout)
+	default:
+		printUsage(stderr)
+		return errUsage
+	}
+}
+
+func (a App) enableStrict(stdout io.Writer) error {
+	if err := a.requireAdmin(); err != nil {
+		return err
+	}
+
+	store := a.deps.StateStore()
+	state, err := a.loadActiveState()
+	if err != nil {
+		return err
+	}
+	if state.StrictMode {
+		fmt.Fprintln(stdout, "Strict mode already enabled.")
+		return nil
+	}
+
+	fw := a.deps.Firewall()
+	rules, err := fw.EnabledOutboundAllowRules()
+	if err != nil {
+		return fmt.Errorf("snapshot enabled outbound allow rules: %w", err)
+	}
+
+	state.StrictMode = true
+	state.DisabledRules = rules
+	if err := store.Save(state); err != nil {
+		return fmt.Errorf("save strict mode state before firewall changes: %w", err)
+	}
+	if err := fw.DisableRules(rules); err != nil {
+		return fmt.Errorf("disable existing outbound allow rules for strict mode: %w", err)
+	}
+	if err := ExecutePlan(fw, EnablePlanWithPolicies(state.SavedPolicies, state.ChromePath, state.AllowedApps)); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(stdout, "Strict mode enabled.")
+	fmt.Fprintf(stdout, "Disabled outbound allow rules: %d\n", len(rules))
+	return nil
+}
+
+func (a App) disableStrict(stdout io.Writer) error {
+	if err := a.requireAdmin(); err != nil {
+		return err
+	}
+
+	store := a.deps.StateStore()
+	state, err := a.loadActiveState()
+	if err != nil {
+		return err
+	}
+	if !state.StrictMode {
+		fmt.Fprintln(stdout, "Strict mode is not enabled.")
+		return nil
+	}
+
+	if err := a.deps.Firewall().EnableRules(state.DisabledRules); err != nil {
+		return fmt.Errorf("restore firewall rules disabled by strict mode: %w", err)
+	}
+
+	restored := len(state.DisabledRules)
+	state.StrictMode = false
+	state.DisabledRules = nil
+	if err := store.Save(state); err != nil {
+		return fmt.Errorf("save strict mode state: %w", err)
+	}
+
+	fmt.Fprintln(stdout, "Strict mode disabled.")
+	fmt.Fprintf(stdout, "Restored outbound allow rules: %d\n", restored)
+	return nil
 }
 
 func (a App) addApp(input string, stdout io.Writer) error {
@@ -310,6 +406,14 @@ func printAllowedApps(stdout io.Writer, state State) {
 	for _, app := range state.AllowedApps {
 		fmt.Fprintln(stdout, "   -", app.Name+":", app.Path)
 	}
+}
+
+func printStrictMode(stdout io.Writer, state State) {
+	if state.StrictMode {
+		fmt.Fprintf(stdout, "Strict mode: enabled (%d outbound allow rules disabled)\n", len(state.DisabledRules))
+		return
+	}
+	fmt.Fprintln(stdout, "Strict mode: disabled")
 }
 
 func hasAllowedApp(apps []AllowedApp, app AllowedApp) bool {

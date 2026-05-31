@@ -3,6 +3,7 @@
 package datalimiter
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -91,6 +92,45 @@ func (NetshFirewall) DataLimiterRulesPresent() (bool, error) {
 	return strings.Contains(out, "present"), nil
 }
 
+func (NetshFirewall) EnabledOutboundAllowRules() ([]FirewallRuleIdentity, error) {
+	command := `
+$rules = Get-NetFirewallRule -Direction Outbound -Action Allow -Enabled True |
+  Where-Object { $_.DisplayName -notlike 'DataLimiter -*' } |
+  Select-Object -Property Name,DisplayName
+if ($rules) { $rules | ConvertTo-Json -Compress }
+`
+	out, err := runPowerShell(command)
+	if err != nil {
+		return nil, err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return nil, nil
+	}
+
+	var rules []FirewallRuleIdentity
+	if strings.HasPrefix(out, "[") {
+		if err := json.Unmarshal([]byte(out), &rules); err != nil {
+			return nil, err
+		}
+		return rules, nil
+	}
+
+	var rule FirewallRuleIdentity
+	if err := json.Unmarshal([]byte(out), &rule); err != nil {
+		return nil, err
+	}
+	return []FirewallRuleIdentity{rule}, nil
+}
+
+func (NetshFirewall) DisableRules(rules []FirewallRuleIdentity) error {
+	return setRulesEnabled(rules, false)
+}
+
+func (NetshFirewall) EnableRules(rules []FirewallRuleIdentity) error {
+	return setRulesEnabled(rules, true)
+}
+
 func runNetsh(args ...string) (string, error) {
 	cmd := exec.Command("netsh", args...)
 	out, err := cmd.CombinedOutput()
@@ -111,4 +151,28 @@ func runPowerShell(command string) (string, error) {
 
 func quotePS(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func setRulesEnabled(rules []FirewallRuleIdentity, enabled bool) error {
+	if len(rules) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		if rule.Name != "" {
+			names = append(names, quotePS(rule.Name))
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+
+	cmdlet := "Disable-NetFirewallRule"
+	if enabled {
+		cmdlet = "Enable-NetFirewallRule"
+	}
+	command := "$names = @(" + strings.Join(names, ",") + "); foreach ($name in $names) { Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue | " + cmdlet + " }"
+	_, err := runPowerShell(command)
+	return err
 }

@@ -14,6 +14,14 @@ type Firewall interface {
 	DeleteDataLimiterRules() error
 	AddRule(rule FirewallRule) error
 	DataLimiterRulesPresent() (bool, error)
+	EnabledOutboundAllowRules() ([]FirewallRuleIdentity, error)
+	DisableRules(rules []FirewallRuleIdentity) error
+	EnableRules(rules []FirewallRuleIdentity) error
+}
+
+type FirewallRuleIdentity struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
 }
 
 type FirewallRule struct {
