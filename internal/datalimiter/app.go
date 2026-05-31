@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 type App struct {
 	deps Deps
@@ -15,6 +16,7 @@ type App struct {
 type Deps interface {
 	IsAdmin() bool
 	FindChrome() (string, error)
+	ResolveApp(input string) (AllowedApp, error)
 	StateStore() StateStore
 	Firewall() Firewall
 }
@@ -24,7 +26,7 @@ func NewApp(deps Deps) App {
 }
 
 func (a App) Run(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
+	if len(args) == 0 {
 		printUsage(stderr)
 		return 2
 	}
@@ -32,19 +34,40 @@ func (a App) Run(args []string, stdout, stderr io.Writer) int {
 	var err error
 	switch args[0] {
 	case "enable":
+		if len(args) != 1 {
+			printUsage(stderr)
+			return 2
+		}
 		err = a.enable(stdout)
 	case "disable":
+		if len(args) != 1 {
+			printUsage(stderr)
+			return 2
+		}
 		err = a.disable(stdout)
 	case "status":
+		if len(args) != 1 {
+			printUsage(stderr)
+			return 2
+		}
 		err = a.status(stdout)
 	case "repair":
+		if len(args) != 1 {
+			printUsage(stderr)
+			return 2
+		}
 		err = a.repair(stdout)
+	case "app":
+		err = a.appCommand(args[1:], stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
 	}
 
 	if err != nil {
+		if errors.Is(err, errUsage) {
+			return 2
+		}
 		fmt.Fprintln(stderr, "Error:", err)
 		return 1
 	}
@@ -53,6 +76,8 @@ func (a App) Run(args []string, stdout, stderr io.Writer) int {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: datalimiter <enable|disable|status|repair>")
+	fmt.Fprintln(w, "       datalimiter app add <name-or-path>")
+	fmt.Fprintln(w, "       datalimiter app remove <name-or-path>")
 }
 
 func (a App) enable(stdout io.Writer) error {
@@ -93,7 +118,7 @@ func (a App) enable(stdout io.Writer) error {
 		return fmt.Errorf("save rollback state before firewall changes: %w", err)
 	}
 
-	plan := EnablePlanWithPolicies(saved, chromePath)
+	plan := EnablePlanWithPolicies(saved, chromePath, nil)
 	if err := ExecutePlan(fw, plan); err != nil {
 		return err
 	}
@@ -148,10 +173,11 @@ func (a App) status(stdout io.Writer) error {
 	switch {
 	case stateErr == nil && state.Active && rules:
 		fmt.Fprintln(stdout, "Status: active")
-		fmt.Fprintln(stdout, "Chrome:", state.ChromePath)
+		printAllowedApps(stdout, state)
 	case stateErr == nil && state.Active && !rules:
 		fmt.Fprintln(stdout, "Status: inconsistent")
 		fmt.Fprintln(stdout, "State says DataLimiter is active, but expected firewall rules are missing. Run: datalimiter repair")
+		printAllowedApps(stdout, state)
 	case errors.Is(stateErr, ErrStateNotFound) && rules:
 		fmt.Fprintln(stdout, "Status: inconsistent")
 		fmt.Fprintln(stdout, "DataLimiter firewall rules exist, but the state file is missing. Run datalimiter disable to remove rules, then restore outbound policy manually if needed.")
@@ -178,13 +204,140 @@ func (a App) repair(stdout io.Writer) error {
 		return errors.New("DataLimiter is not active; run datalimiter enable first")
 	}
 
-	if err := ExecutePlan(a.deps.Firewall(), EnablePlanWithPolicies(state.SavedPolicies, state.ChromePath)); err != nil {
+	if err := ExecutePlan(a.deps.Firewall(), EnablePlanWithPolicies(state.SavedPolicies, state.ChromePath, state.AllowedApps)); err != nil {
 		return err
 	}
 
 	fmt.Fprintln(stdout, "DataLimiter firewall rules repaired.")
 	return nil
 }
+
+func (a App) appCommand(args []string, stdout, stderr io.Writer) error {
+	if len(args) != 2 {
+		printUsage(stderr)
+		return errUsage
+	}
+
+	switch args[0] {
+	case "add":
+		return a.addApp(args[1], stdout)
+	case "remove", "rm":
+		return a.removeApp(args[1], stdout)
+	default:
+		printUsage(stderr)
+		return errUsage
+	}
+}
+
+func (a App) addApp(input string, stdout io.Writer) error {
+	if err := a.requireAdmin(); err != nil {
+		return err
+	}
+
+	app, err := a.deps.ResolveApp(input)
+	if err != nil {
+		return fmt.Errorf("resolve executable %q: %w", input, err)
+	}
+
+	state, err := a.loadActiveState()
+	if err != nil {
+		return err
+	}
+	if hasAllowedApp(state.AllowedApps, app) {
+		fmt.Fprintln(stdout, "App already allowed:", app.Name, "("+app.Path+")")
+		return nil
+	}
+
+	state.AllowedApps = append(state.AllowedApps, app)
+	if err := a.deps.StateStore().Save(state); err != nil {
+		return fmt.Errorf("save allowed app state: %w", err)
+	}
+	if err := ExecutePlan(a.deps.Firewall(), EnablePlanWithPolicies(state.SavedPolicies, state.ChromePath, state.AllowedApps)); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(stdout, "Allowed app added:", app.Name)
+	fmt.Fprintln(stdout, "Path:", app.Path)
+	return nil
+}
+
+func (a App) removeApp(input string, stdout io.Writer) error {
+	if err := a.requireAdmin(); err != nil {
+		return err
+	}
+
+	state, err := a.loadActiveState()
+	if err != nil {
+		return err
+	}
+
+	remaining, removed := removeAllowedApp(state.AllowedApps, input)
+	if !removed {
+		return fmt.Errorf("app %q is not in the allowed app list", input)
+	}
+
+	state.AllowedApps = remaining
+	if err := a.deps.StateStore().Save(state); err != nil {
+		return fmt.Errorf("save allowed app state: %w", err)
+	}
+	if err := ExecutePlan(a.deps.Firewall(), EnablePlanWithPolicies(state.SavedPolicies, state.ChromePath, state.AllowedApps)); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(stdout, "Allowed app removed:", input)
+	return nil
+}
+
+func (a App) loadActiveState() (State, error) {
+	state, err := a.deps.StateStore().Load()
+	if err != nil {
+		return State{}, fmt.Errorf("this command requires DataLimiter to be active: %w", err)
+	}
+	if !state.Active {
+		return State{}, errors.New("DataLimiter is not active; run datalimiter enable first")
+	}
+	return state, nil
+}
+
+func printAllowedApps(stdout io.Writer, state State) {
+	fmt.Fprintln(stdout, "Allowed apps:")
+	fmt.Fprintln(stdout, "  Chrome:", state.ChromePath)
+	if len(state.AllowedApps) == 0 {
+		fmt.Fprintln(stdout, "  Extra apps: none")
+		return
+	}
+	fmt.Fprintln(stdout, "  Extra apps:")
+	for _, app := range state.AllowedApps {
+		fmt.Fprintln(stdout, "   -", app.Name+":", app.Path)
+	}
+}
+
+func hasAllowedApp(apps []AllowedApp, app AllowedApp) bool {
+	for _, existing := range apps {
+		if strings.EqualFold(existing.Path, app.Path) || strings.EqualFold(existing.Name, app.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func removeAllowedApp(apps []AllowedApp, input string) ([]AllowedApp, bool) {
+	needle := strings.TrimSuffix(strings.ToLower(input), ".exe")
+	remaining := make([]AllowedApp, 0, len(apps))
+	removed := false
+	for _, app := range apps {
+		appName := strings.TrimSuffix(strings.ToLower(app.Name), ".exe")
+		appBase := strings.TrimSuffix(strings.ToLower(baseName(app.Path)), ".exe")
+		if strings.EqualFold(app.Path, input) || appName == needle || appBase == needle {
+			removed = true
+			continue
+		}
+		remaining = append(remaining, app)
+	}
+	return remaining, removed
+}
+
+var errUsage = errors.New("invalid command")
 
 func (a App) requireAdmin() error {
 	if !a.deps.IsAdmin() {

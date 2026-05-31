@@ -49,7 +49,7 @@ func TestEnableSavesStateAndAddsExpectedRules(t *testing.T) {
 	store := &memoryStore{}
 	fw := &fakeFirewall{
 		activeProfiles: []string{"publicprofile"},
-		policies:      map[string]string{"publicprofile": "blockinbound,allowoutbound"},
+		policies:       map[string]string{"publicprofile": "blockinbound,allowoutbound"},
 	}
 	deps := fakeDeps{admin: true, chromePath: `C:\Chrome\chrome.exe`, fw: fw, store: store}
 	app := NewApp(deps)
@@ -60,8 +60,8 @@ func TestEnableSavesStateAndAddsExpectedRules(t *testing.T) {
 	if !store.state.Active || store.state.ChromePath != deps.chromePath {
 		t.Fatalf("state = %#v", store.state)
 	}
-	if got := len(fw.added); got != len(ExpectedRules(deps.chromePath)) {
-		t.Fatalf("added rules = %d, want %d", got, len(ExpectedRules(deps.chromePath)))
+	if got := len(fw.added); got != len(ExpectedRules(deps.chromePath, nil)) {
+		t.Fatalf("added rules = %d, want %d", got, len(ExpectedRules(deps.chromePath, nil)))
 	}
 }
 
@@ -79,6 +79,87 @@ func TestStatusInconsistentWhenStateActiveButRulesMissing(t *testing.T) {
 	}
 }
 
+func TestStatusShowsAllowedApps(t *testing.T) {
+	store := &memoryStore{
+		state: State{
+			Active:     true,
+			ChromePath: `C:\Chrome\chrome.exe`,
+			AllowedApps: []AllowedApp{
+				{Name: "slack", Path: `C:\Apps\slack.exe`},
+			},
+		},
+		exists: true,
+	}
+	fw := &fakeFirewall{rulesPresent: true}
+	app := NewApp(fakeDeps{fw: fw, store: store})
+	var stdout bytes.Buffer
+	code := app.Run([]string{"status"}, &stdout, &bytes.Buffer{})
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout.String(), "slack") || !strings.Contains(stdout.String(), `C:\Apps\slack.exe`) {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestAppAddRequiresActiveStateAndAddsFirewallRule(t *testing.T) {
+	store := &memoryStore{
+		state: State{
+			Active:        true,
+			SavedPolicies: map[string]string{"publicprofile": "blockinbound,allowoutbound"},
+			ChromePath:    `C:\Chrome\chrome.exe`,
+		},
+		exists: true,
+	}
+	fw := &fakeFirewall{}
+	deps := fakeDeps{
+		admin: true,
+		fw:    fw,
+		store: store,
+		resolvedApp: AllowedApp{
+			Name: "slack",
+			Path: `C:\Apps\slack.exe`,
+		},
+	}
+	app := NewApp(deps)
+	code := app.Run([]string{"app", "add", "slack"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if len(store.state.AllowedApps) != 1 || store.state.AllowedApps[0].Name != "slack" {
+		t.Fatalf("allowed apps = %#v", store.state.AllowedApps)
+	}
+	if !contains(fw.calls, "add-rule:"+RulePrefix+" Allow App - slack") {
+		t.Fatalf("calls = %v, want app firewall rule", fw.calls)
+	}
+}
+
+func TestAppRemoveUpdatesStateAndRebuildsRules(t *testing.T) {
+	store := &memoryStore{
+		state: State{
+			Active:        true,
+			SavedPolicies: map[string]string{"publicprofile": "blockinbound,allowoutbound"},
+			ChromePath:    `C:\Chrome\chrome.exe`,
+			AllowedApps: []AllowedApp{
+				{Name: "slack", Path: `C:\Apps\slack.exe`},
+			},
+		},
+		exists: true,
+	}
+	fw := &fakeFirewall{}
+	app := NewApp(fakeDeps{admin: true, fw: fw, store: store})
+	code := app.Run([]string{"app", "remove", "slack"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if len(store.state.AllowedApps) != 0 {
+		t.Fatalf("allowed apps = %#v, want empty", store.state.AllowedApps)
+	}
+	if contains(fw.calls, "add-rule:"+RulePrefix+" Allow App - slack") {
+		t.Fatalf("calls = %v, removed app should not be re-added", fw.calls)
+	}
+}
+
 func TestDisableDeletesRulesEvenWhenStateMissing(t *testing.T) {
 	store := &memoryStore{}
 	fw := &fakeFirewall{}
@@ -93,11 +174,13 @@ func TestDisableDeletesRulesEvenWhenStateMissing(t *testing.T) {
 }
 
 type fakeDeps struct {
-	admin      bool
-	chromePath string
-	chromeErr  error
-	fw         *fakeFirewall
-	store      *memoryStore
+	admin       bool
+	chromePath  string
+	chromeErr   error
+	resolvedApp AllowedApp
+	resolveErr  error
+	fw          *fakeFirewall
+	store       *memoryStore
 }
 
 func (d fakeDeps) IsAdmin() bool { return d.admin }
@@ -106,6 +189,12 @@ func (d fakeDeps) FindChrome() (string, error) {
 		return "", d.chromeErr
 	}
 	return d.chromePath, nil
+}
+func (d fakeDeps) ResolveApp(string) (AllowedApp, error) {
+	if d.resolveErr != nil {
+		return AllowedApp{}, d.resolveErr
+	}
+	return d.resolvedApp, nil
 }
 func (d fakeDeps) Firewall() Firewall {
 	if d.fw != nil {
@@ -122,10 +211,10 @@ func (d fakeDeps) StateStore() StateStore {
 
 type fakeFirewall struct {
 	activeProfiles []string
-	policies      map[string]string
-	rulesPresent  bool
-	calls         []string
-	added         []FirewallRule
+	policies       map[string]string
+	rulesPresent   bool
+	calls          []string
+	added          []FirewallRule
 }
 
 func (f *fakeFirewall) ActiveProfiles() ([]string, error) {

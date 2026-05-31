@@ -17,10 +17,10 @@ type Firewall interface {
 }
 
 type FirewallRule struct {
-	Name      string
-	Program   string
-	Protocol  string
-	LocalPort string
+	Name       string
+	Program    string
+	Protocol   string
+	LocalPort  string
 	RemotePort string
 }
 
@@ -34,10 +34,10 @@ func EnablePlan(profiles []string, chromePath string) []PlanStep {
 	for _, profile := range profiles {
 		policies[profile] = "blockinbound,allowoutbound"
 	}
-	return EnablePlanWithPolicies(policies, chromePath)
+	return EnablePlanWithPolicies(policies, chromePath, nil)
 }
 
-func EnablePlanWithPolicies(savedPolicies map[string]string, chromePath string) []PlanStep {
+func EnablePlanWithPolicies(savedPolicies map[string]string, chromePath string, allowedApps []AllowedApp) []PlanStep {
 	steps := []PlanStep{
 		{
 			Description: "remove existing DataLimiter rules",
@@ -64,7 +64,7 @@ func EnablePlanWithPolicies(savedPolicies map[string]string, chromePath string) 
 		})
 	}
 
-	for _, rule := range ExpectedRules(chromePath) {
+	for _, rule := range ExpectedRules(chromePath, allowedApps) {
 		rule := rule
 		steps = append(steps, PlanStep{
 			Description: "add firewall rule " + rule.Name,
@@ -86,14 +86,21 @@ func withBlockedOutbound(policy string) string {
 	return "blockinbound,blockoutbound"
 }
 
-func ExpectedRules(chromePath string) []FirewallRule {
-	return []FirewallRule{
+func ExpectedRules(chromePath string, allowedApps []AllowedApp) []FirewallRule {
+	rules := []FirewallRule{
 		{Name: RulePrefix + " Allow Chrome", Program: chromePath},
 		{Name: RulePrefix + " Allow DNS UDP", Protocol: "UDP", RemotePort: "53"},
 		{Name: RulePrefix + " Allow DNS TCP", Protocol: "TCP", RemotePort: "53"},
 		{Name: RulePrefix + " Allow DHCP Client", Protocol: "UDP", LocalPort: "68", RemotePort: "67"},
 		{Name: RulePrefix + " Allow DHCP Server Replies", Protocol: "UDP", LocalPort: "67", RemotePort: "68"},
 	}
+	for _, app := range allowedApps {
+		rules = append(rules, FirewallRule{
+			Name:    RulePrefix + " Allow App - " + app.Name,
+			Program: app.Path,
+		})
+	}
+	return rules
 }
 
 func ExecutePlan(fw Firewall, steps []PlanStep) error {

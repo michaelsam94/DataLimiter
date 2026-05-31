@@ -3,9 +3,9 @@ package datalimiter
 import "testing"
 
 func TestExpectedRules(t *testing.T) {
-	rules := ExpectedRules(`C:\Chrome\chrome.exe`)
-	if len(rules) != 5 {
-		t.Fatalf("len = %d, want 5", len(rules))
+	rules := ExpectedRules(`C:\Chrome\chrome.exe`, []AllowedApp{{Name: "slack", Path: `C:\Apps\slack.exe`}})
+	if len(rules) != 6 {
+		t.Fatalf("len = %d, want 6", len(rules))
 	}
 	for _, rule := range rules {
 		if len(rule.Name) < len(RulePrefix) || rule.Name[:len(RulePrefix)] != RulePrefix {
@@ -16,7 +16,7 @@ func TestExpectedRules(t *testing.T) {
 
 func TestEnablePlanSetsPoliciesBeforeAddingRules(t *testing.T) {
 	fw := &fakeFirewall{}
-	steps := EnablePlanWithPolicies(map[string]string{"publicprofile": "allowinbound,allowoutbound"}, `C:\Chrome\chrome.exe`)
+	steps := EnablePlanWithPolicies(map[string]string{"publicprofile": "allowinbound,allowoutbound"}, `C:\Chrome\chrome.exe`, nil)
 	if err := ExecutePlan(fw, steps); err != nil {
 		t.Fatal(err)
 	}

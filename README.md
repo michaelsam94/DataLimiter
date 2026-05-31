@@ -24,9 +24,31 @@ datalimiter enable
 datalimiter disable
 datalimiter status
 datalimiter repair
+datalimiter app add <name-or-path>
+datalimiter app remove <name-or-path>
 ```
 
 `enable`, `disable`, and `repair` require Administrator privileges.
+`app add` and `app remove` also require Administrator privileges because they
+rewrite DataLimiter firewall rules.
+
+`app add` allows another executable to use the internet alongside Chrome while
+DataLimiter is active. You can pass a command name that Windows can resolve, or
+a full executable path:
+
+```powershell
+datalimiter app add slack
+datalimiter app add "C:\Program Files\SomeApp\SomeApp.exe"
+```
+
+`app remove` removes a previously allowed executable by name or path:
+
+```powershell
+datalimiter app remove slack
+```
+
+`status` shows Chrome and any extra apps currently allowed to access the
+internet.
 
 ## Typical Hotspot Workflow
 
@@ -48,6 +70,18 @@ Check current state at any time:
 
 ```powershell
 datalimiter status
+```
+
+Allow another app for the current DataLimiter session:
+
+```powershell
+datalimiter app add teams
+```
+
+Remove it later:
+
+```powershell
+datalimiter app remove teams
 ```
 
 ## Build

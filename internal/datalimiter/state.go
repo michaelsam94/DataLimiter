@@ -14,7 +14,13 @@ type State struct {
 	Active        bool              `json:"active"`
 	SavedPolicies map[string]string `json:"savedPolicies"`
 	ChromePath    string            `json:"chromePath"`
+	AllowedApps   []AllowedApp      `json:"allowedApps,omitempty"`
 	Version       string            `json:"version"`
+}
+
+type AllowedApp struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 type StateStore interface {
