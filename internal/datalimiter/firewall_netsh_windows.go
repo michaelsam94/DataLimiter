@@ -95,7 +95,18 @@ func (NetshFirewall) DataLimiterRulesPresent() (bool, error) {
 func (NetshFirewall) EnabledOutboundAllowRules() ([]FirewallRuleIdentity, error) {
 	command := `
 $rules = Get-NetFirewallRule -Direction Outbound -Action Allow -Enabled True |
-  Where-Object { $_.DisplayName -notlike 'DataLimiter -*' } |
+  Where-Object {
+    $_.DisplayName -notlike 'DataLimiter -*' -and
+    $_.Name -notlike 'CoreNet-*' -and
+    $_.Name -notlike 'NETDIS-*' -and
+    $_.Name -notlike 'Microsoft-Windows-*' -and
+    $_.Name -notlike 'MicrosoftWindows.Client.*' -and
+    $_.Name -notlike 'Microsoft.Windows.*' -and
+    $_.Name -notlike 'MicrosoftWindows.*' -and
+    $_.Name -notlike 'Microsoft.*_cw5n1h2txyewy-*' -and
+    $_.Name -notlike 'Microsoft.*_8wekyb3d8bbwe-*' -and
+    $_.Name -notlike 'Windows.*_cw5n1h2txyewy-*'
+  } |
   Select-Object -Property Name,DisplayName
 if ($rules) { $rules | ConvertTo-Json -Compress }
 `
@@ -172,7 +183,26 @@ func setRulesEnabled(rules []FirewallRuleIdentity, enabled bool) error {
 	if enabled {
 		cmdlet = "Enable-NetFirewallRule"
 	}
-	command := "$names = @(" + strings.Join(names, ",") + "); foreach ($name in $names) { Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue | " + cmdlet + " }"
-	_, err := runPowerShell(command)
-	return err
+	for _, chunk := range chunkStrings(names, 100) {
+		command := "$names = @(" + strings.Join(chunk, ",") + "); Get-NetFirewallRule -Name $names -ErrorAction SilentlyContinue | " + cmdlet
+		if _, err := runPowerShell(command); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func chunkStrings(items []string, size int) [][]string {
+	if size <= 0 || len(items) == 0 {
+		return nil
+	}
+	chunks := make([][]string, 0, (len(items)+size-1)/size)
+	for start := 0; start < len(items); start += size {
+		end := start + size
+		if end > len(items) {
+			end = len(items)
+		}
+		chunks = append(chunks, items[start:end])
+	}
+	return chunks
 }

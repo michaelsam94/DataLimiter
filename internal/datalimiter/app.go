@@ -272,19 +272,24 @@ func (a App) enableStrict(stdout io.Writer) error {
 	}
 
 	fw := a.deps.Firewall()
+	fmt.Fprintln(stdout, "Strict mode: scanning existing outbound allow rules...")
 	rules, err := fw.EnabledOutboundAllowRules()
 	if err != nil {
 		return fmt.Errorf("snapshot enabled outbound allow rules: %w", err)
 	}
+	fmt.Fprintf(stdout, "Strict mode: captured %d outbound allow rules to temporarily disable.\n", len(rules))
 
 	state.StrictMode = true
 	state.DisabledRules = rules
+	fmt.Fprintln(stdout, "Strict mode: saving restore state...")
 	if err := store.Save(state); err != nil {
 		return fmt.Errorf("save strict mode state before firewall changes: %w", err)
 	}
+	fmt.Fprintln(stdout, "Strict mode: disabling captured outbound allow rules...")
 	if err := fw.DisableRules(rules); err != nil {
 		return fmt.Errorf("disable existing outbound allow rules for strict mode: %w", err)
 	}
+	fmt.Fprintln(stdout, "Strict mode: reapplying DataLimiter allow rules...")
 	if err := ExecutePlan(fw, EnablePlanWithPolicies(state.SavedPolicies, state.ChromePath, state.AllowedApps)); err != nil {
 		return err
 	}
@@ -309,6 +314,7 @@ func (a App) disableStrict(stdout io.Writer) error {
 		return nil
 	}
 
+	fmt.Fprintf(stdout, "Strict mode: restoring %d outbound allow rules...\n", len(state.DisabledRules))
 	if err := a.deps.Firewall().EnableRules(state.DisabledRules); err != nil {
 		return fmt.Errorf("restore firewall rules disabled by strict mode: %w", err)
 	}
@@ -316,6 +322,7 @@ func (a App) disableStrict(stdout io.Writer) error {
 	restored := len(state.DisabledRules)
 	state.StrictMode = false
 	state.DisabledRules = nil
+	fmt.Fprintln(stdout, "Strict mode: saving restore state...")
 	if err := store.Save(state); err != nil {
 		return fmt.Errorf("save strict mode state: %w", err)
 	}

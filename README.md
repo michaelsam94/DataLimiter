@@ -66,8 +66,11 @@ datalimiter strict enable
 ```
 
 Strict mode snapshots currently enabled outbound allow rules that were not
-created by DataLimiter, disables those rules, and then reapplies the DataLimiter
+created by DataLimiter, skips common Windows networking and Microsoft system
+rules, disables the captured rules in bulk, and then reapplies the DataLimiter
 allow rules for Chrome, DNS, DHCP, and any apps added with `datalimiter app add`.
+The command prints progress while it scans, saves restore state, disables rules,
+and reapplies DataLimiter rules.
 
 Turn strict mode off without ending the DataLimiter session:
 
