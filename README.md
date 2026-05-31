@@ -135,3 +135,7 @@ GOOS=windows GOARCH=amd64 go build -o datalimiter-windows-amd64.exe ./cmd/datali
 
 The first release artifact is intended for GitHub Releases and later `winget`
 submission.
+
+## License
+
+DataLimiter is released under the MIT License.
