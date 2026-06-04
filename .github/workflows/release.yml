@@ -30,6 +30,8 @@ jobs:
       - name: Scan release asset with Microsoft Defender
         shell: pwsh
         run: |
+          $scanFile = Join-Path $env:TEMP 'datalimiter-windows-amd64.exe'
+          Copy-Item -Path datalimiter-windows-amd64.exe -Destination $scanFile -Force
           $mpCmdRun = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
           if (-not (Test-Path $mpCmdRun)) {
             $platformPath = Join-Path $env:ProgramData 'Microsoft\Windows Defender\Platform'
@@ -40,7 +42,8 @@ jobs:
           if (-not $mpCmdRun) {
             throw 'MpCmdRun.exe was not found on the runner.'
           }
-          & $mpCmdRun -Scan -ScanType 3 -File datalimiter-windows-amd64.exe
+          & $mpCmdRun -SignatureUpdate
+          & $mpCmdRun -Scan -ScanType 3 -File $scanFile
           if ($LASTEXITCODE -ne 0) {
             throw "Microsoft Defender scan failed with exit code $LASTEXITCODE."
           }
