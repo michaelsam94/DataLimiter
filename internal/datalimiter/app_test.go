@@ -7,6 +7,22 @@ import (
 	"testing"
 )
 
+func TestRunWithoutArgsShowsUsageSuccessfully(t *testing.T) {
+	app := NewApp(fakeDeps{})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := app.Run(nil, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout.String(), "Usage:") {
+		t.Fatalf("stdout = %q, want usage", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestRunUnknownCommand(t *testing.T) {
 	app := NewApp(fakeDeps{})
 	var stderr bytes.Buffer

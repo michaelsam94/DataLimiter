@@ -27,6 +27,24 @@ jobs:
       - name: Build
         run: go build -trimpath -ldflags="-s -w" -o datalimiter-windows-amd64.exe ./cmd/datalimiter
 
+      - name: Scan release asset with Microsoft Defender
+        shell: pwsh
+        run: |
+          $mpCmdRun = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
+          if (-not (Test-Path $mpCmdRun)) {
+            $platformPath = Join-Path $env:ProgramData 'Microsoft\Windows Defender\Platform'
+            $mpCmdRun = Get-ChildItem -Path $platformPath -Filter MpCmdRun.exe -Recurse |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $mpCmdRun) {
+            throw 'MpCmdRun.exe was not found on the runner.'
+          }
+          & $mpCmdRun -Scan -ScanType 3 -File datalimiter-windows-amd64.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Microsoft Defender scan failed with exit code $LASTEXITCODE."
+          }
+
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2

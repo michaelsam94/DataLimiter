@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 type App struct {
 	deps Deps
@@ -27,8 +27,8 @@ func NewApp(deps Deps) App {
 
 func (a App) Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		printUsage(stderr)
-		return 2
+		printUsage(stdout)
+		return 0
 	}
 
 	var err error
